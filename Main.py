@@ -6,45 +6,91 @@ import unicodedata
 from pymongo import *
 import re
 
-updater = Updater(token="")
+updater = Updater(token="663323939:AAHhVjHKihWEVAiaWfMtwwCbotxULE0Wk8U")
 dispatcher = updater.dispatcher
-url = ''
 
 
 def start_command(bot, update):
-    """ /start function """
+    """
+    /start command
+    """
 
     bot.send_message(chat_id=update.message.chat_id, text="Привіт! Для пошуку вакансій введіть пошуковий запит")
 
 
 def form_url(text='python львов'):
-    l = text.split()
-    searchtext = 'https://jobs.dou.ua/vacancies/?search='
-    for item in l:
-        if re.search(r'[а-яА-ЯёЁ]', item) is None:
-            searchtext += '+' + item
-        else:
-            searchtext += '+' + quote(item)
-    return searchtext
+    """
+    Forms url string for request and writes result in global variable
+    """
+
+    words = text.split()
+    pattern = 'https://jobs.dou.ua/vacancies/?search='
+    for i in range(len(words)):
+        if re.search(r'[а-яА-ЯёЁ]', words[i]) is not None:
+            words[i] = quote(words[i])
+    global url
+    global searchtext
+    searchtext = '+'.join(words)
+    url = pattern + searchtext
 
 
-def get_html(urltext):
+def get_html():
+    """
+    Makes scrapping of web-page and returns html-code as text
+    return: response (str) - html code of page
+    """
+
+    client = requests.session()
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
                       'Chrome/68.0.3440.106 Safari/537.36 '
     }
-    result = requests.get(urltext, headers=headers)
-    return result
+
+    first_part = client.get(url, headers=headers)  # получаю первый get-запрос
+    soup = BeautifulSoup(first_part.text, features="html.parser")  # создаю объект-парсер для проверки
+
+    # наличия кнопки и результатов на странице
+    if soup.find('div', {'class': 'l-items'}) is None:  # если на странице нет списка результатов
+        response = None
+
+    elif soup.find('div', {'class': 'more-btn'}) is None:  # если на странице нет кнопки "Больше вакансий"
+        response = first_part
+
+    else:  # если есть список вакансий и есть кнопка "Больше вакансий"
+        result = first_part.text  # сохраняем html первой порции
+        pattern = 'https://jobs.dou.ua/vacancies/xhr-load/?search='
+
+        csrf = dict(client.cookies)['csrftoken']  # сохраняем токен
+        headers['Referer'] = url  # дополняет хидеры для пост-запроса
+
+        data = dict(csrfmiddlewaretoken=csrf, count=20)  # данные, которые передаём пост-запросом
+        while True:
+            second_part = client.post(pattern + searchtext, headers=headers, data=data)
+            result += second_part.json()['html']
+            if second_part.json()['last']:  # когда у полученных данных флаг, что они последние
+                break
+        response = result
+
+    client.close()
+    return response
 
 
 def write_database(result):
+    """
+    Parses html-page and writes data to database
+    :param result: html page as text
+    :return: text message with result of writing
+    """
+
+    if result is None:
+        return 'Не знайдено жодної вакансії'
     conn = MongoClient()
     db = conn.DouJobsBotDB
     jobs = db.Jobs
-    soup = BeautifulSoup(result.text, features="html.parser")
-    vacancies = soup.find('ul', {'class': 'lt'})
-    items = vacancies.findAll('li', {'class': 'l-vacancy'})
+    soup = BeautifulSoup(result, features="html.parser")
+    items = soup.findAll('li', {'class': 'l-vacancy'})
 
+    count = 0
     jobs.remove()
     for item in items:
         jobs.save(
@@ -52,24 +98,40 @@ def write_database(result):
              'link': item.find('div', {'class': 'title'}).find('a').get('href'),
              'company': unicodedata.normalize("NFKD", item.find('strong').find('a', {'class': 'company'}).text),
              'cities': item.find('span', {'class': 'cities'}).text})
+        count += 1
     conn.close()
+    return "Дані завантажено! Знайдено {0} записів".format(count)
 
 
 def text_message(bot, update):
+    """
+    Handler for text messages, that user sends to bot.
+    Message means query to search vacancies.
+    Displays result of self-work as message to user.
+    """
+
+
     text = update.message.text
     global url
-    url = form_url(text)
-    html_page = get_html(url)
-    write_database(html_page)
-    bot.send_message(chat_id=update.message.chat_id, text='Дані завантажено з DOU.ua. '
-                                                          'Перегляд доступний за командою /get')
+    form_url(text)
+    html_page = get_html()
+    result = write_database(html_page)
+    bot.send_message(chat_id=update.message.chat_id, text=str(result))
 
 
 def help_command(bot, update):
+    """
+    /help command
+    """
     bot.send_message(chat_id=update.message.chat_id, text="Для пошуку вакансій введіть пошуковий запит")
 
 
 def get_command(bot, update):
+    """
+    Shows about vacancies, that already appear in database.
+
+    Future extension: telegraph displaying of info
+    """
     conn = MongoClient()
     db = conn.DouJobsBotDB
     jobs = db.Jobs
@@ -94,24 +156,32 @@ def get_command(bot, update):
 
 
 def check_command(bot, update):
+    """
+    Compares vacancies from current html-page and from database.
+    Displays new vacancies if there are such.
+    """
+
+    print('In check command handler')
     conn = MongoClient()
     db = conn.DouJobsBotDB
     jobs = db.Jobs
 
-    url = form_url()
-    html_page = get_html(url)
+    form_url()
+    html_page = get_html()
 
-    soup = BeautifulSoup(html_page.text, features="html.parser")
-    vacancies = soup.find('ul', {'class': 'lt'})
-    items = vacancies.findAll('li', {'class': 'l-vacancy'})
+    if html_page is None:
+        print(html_page)
+        bot.send_message(chat_id=update.message.chat_id, text='Немає результатів')
+    soup = BeautifulSoup(html_page, features="html.parser")
+    items = soup.findAll('li', {'class': 'l-vacancy'})
 
     new = []
 
     for item in items:
         current = {'vacancy': unicodedata.normalize("NFKD", item.find('div', {'class': 'title'}).find('a').text),
-             'link': item.find('div', {'class': 'title'}).find('a').get('href'),
-             'company': unicodedata.normalize("NFKD", item.find('strong').find('a', {'class': 'company'}).text),
-             'cities': item.find('span', {'class': 'cities'}).text}
+                   'link': item.find('div', {'class': 'title'}).find('a').get('href'),
+                   'company': unicodedata.normalize("NFKD", item.find('strong').find('a', {'class': 'company'}).text),
+                   'cities': item.find('span', {'class': 'cities'}).text}
         if jobs.find(current).count() == 0:
             new.append(current)
         else:
@@ -131,17 +201,7 @@ def check_command(bot, update):
     write_database(html_page)
 
 
-convhandler = ConversationHandler(
-    entry_points=[CommandHandler('get', get_command)],
-    states={
-        "info": [MessageHandler(Filters.text, text_message)]
-    },
-    fallbacks=[CommandHandler('get', get_command)]
-)
-
-
-dispatcher.add_handler(convhandler)
-
+get_command_handler = CommandHandler('get', get_command)
 start_command_handler = CommandHandler('start', start_command)
 help_command_handler = CommandHandler('save', help_command)
 text_handler = MessageHandler(Filters.text, text_message)
