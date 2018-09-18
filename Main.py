@@ -6,7 +6,7 @@ import unicodedata
 from pymongo import *
 import re
 
-updater = Updater(token="663323939:AAHhVjHKihWEVAiaWfMtwwCbotxULE0Wk8U")
+updater = Updater(token="")
 dispatcher = updater.dispatcher
 
 
