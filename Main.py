@@ -159,6 +159,8 @@ def check_command(bot, update):
     """
     Compares vacancies from current html-page and from database.
     Displays new vacancies if there are such.
+    
+    Future extension: autosending messages about updates 
     """
 
     print('In check command handler')
